@@ -1,0 +1,7 @@
+requires 'Config::Tiny';
+requires 'DBI';
+requires 'DBD::Pg';
+requires 'Try::Tiny';
+requires 'Plack', '>= 1.0048';
+requires 'JSON::MaybeXS';
+

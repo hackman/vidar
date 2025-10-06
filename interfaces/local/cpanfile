@@ -1,0 +1,5 @@
+requires 'Plack', '>= 1.0048';
+requires 'JSON::MaybeXS';
+requires 'DBI';
+requires 'DBD::Pg';
+requires 'Try::Tiny';

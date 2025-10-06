@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Central Traffic Insights</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-gray-50 text-gray-900">
+  <div class="max-w-7xl mx-auto p-6">
+    <header class="mb-6 flex items-end justify-between gap-4">
+      <div>
+        <h1 class="text-3xl font-semibold tracking-tight">Central Traffic Insights</h1>
+        <p class="text-sm text-gray-600">IP & User-Agent popularity (aggregated; default last 24h, UTC)</p>
+      </div>
+      <a href="#" id="refresh" class="bg-black text-white rounded-xl px-4 py-2 shadow hover:opacity-90">Refresh</a>
+    </header>
+
+    <!-- Controls -->
+    <section class="grid grid-cols-1 lg:grid-cols-3 gap-4 items-end mb-6">
+      <div class="col-span-2 bg-white rounded-2xl shadow p-4">
+        <div class="flex flex-wrap items-end gap-4">
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">From (UTC)</label>
+            <input id="from" type="datetime-local" class="border rounded-lg px-3 py-2">
+          </div>
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">To (UTC)</label>
+            <input id="to" type="datetime-local" class="border rounded-lg px-3 py-2">
+          </div>
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">Server</label>
+            <select id="server" class="border rounded-lg px-3 py-2 min-w-[12rem]">
+              <option value="all">All Servers</option>
+            </select>
+          </div>
+          <button id="apply" class="ml-auto bg-black text-white rounded-xl px-4 py-2 shadow hover:opacity-90">Apply</button>
+          <button id="last24" class="bg-gray-200 rounded-xl px-4 py-2">Last 24h</button>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-2xl shadow p-4">
+        <div class="flex items-center gap-2">
+          <span class="text-sm text-gray-600">Top limit</span>
+          <input id="limit" type="number" min="5" max="500" value="50" class="w-24 border rounded-lg px-2 py-1">
+        </div>
+      </div>
+    </section>
+
+    <!-- Charts + Lists -->
+    <section class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div class="bg-white rounded-2xl shadow p-4 lg:col-span-2">
+        <div class="flex items-center justify-between mb-2">
+          <h2 class="text-lg font-medium">Requests over time</h2>
+          <div class="text-sm text-gray-500">
+            <label class="mr-2"><input type="radio" name="series_group" value="total" checked> Total</label>
+            <label><input type="radio" name="series_group" value="server"> By server</label>
+          </div>
+        </div>
+        <div class="h-80"><canvas id="series"></canvas></div>
+      </div>
+
+      <div class="bg-white rounded-2xl shadow p-4">
+        <h2 class="text-lg font-medium mb-2">Top IPs</h2>
+        <ol id="top-ips" class="space-y-1 text-sm"></ol>
+      </div>
+
+      <div class="bg-white rounded-2xl shadow p-4">
+        <h2 class="text-lg font-medium mb-2">Top User-Agents</h2>
+        <ol id="top-uas" class="space-y-1 text-sm"></ol>
+      </div>
+    </section>
+
+    <!-- Drawer / modal for breakdown -->
+    <dialog id="drawer" class="p-0 rounded-xl w-full max-w-2xl backdrop:bg-black/30">
+      <div class="bg-white rounded-xl shadow">
+        <div class="flex items-center justify-between p-4 border-b">
+          <h3 id="drawer-title" class="text-lg font-semibold"></h3>
+          <button id="drawer-close" class="text-gray-500 hover:text-black">✕</button>
+        </div>
+        <div id="drawer-body" class="p-4">
+          <ul id="drawer-list" class="space-y-1 text-sm"></ul>
+        </div>
+      </div>
+    </dialog>
+  </div>
+
+  <script>
+    // Helpers
+    const pad = n => String(n).padStart(2,'0');
+    function toLocalDTISO(d) {
+      return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+    }
+    function toUTCISOString(localStr) {
+      if (!localStr) return null;
+      const d = new Date(localStr);
+      // Treat the input as UTC (the labels say UTC)
+      return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes())).toISOString();
+    }
+    async function fetchJSON(url) {
+      const r = await fetch(url, {headers: {'Accept':'application/json'}});
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    }
+
+    // Elements
+    const fromEl = document.getElementById('from');
+    const toEl   = document.getElementById('to');
+    const limitEl= document.getElementById('limit');
+    const serverEl = document.getElementById('server');
+    const apply  = document.getElementById('apply');
+    const last24 = document.getElementById('last24');
+    const refresh= document.getElementById('refresh');
+    const drawer = document.getElementById('drawer');
+    const drawerTitle = document.getElementById('drawer-title');
+    const drawerList = document.getElementById('drawer-list');
+    const drawerClose = document.getElementById('drawer-close');
+
+    // Default last 24h UTC
+    (function initRange() {
+      const to = new Date();
+      const from = new Date(to.getTime() - 24*3600*1000);
+      fromEl.value = toLocalDTISO(from);
+      toEl.value   = toLocalDTISO(to);
+    })();
+
+    // Load servers
+    async function loadServers() {
+      const data = await fetchJSON('/api/servers');
+      serverEl.innerHTML = '<option value="all">All Servers</option>';
+      (data.rows || []).forEach(r => {
+        const opt = document.createElement('option');
+        opt.value = r.server_name;
+        opt.textContent = r.server_name;
+        serverEl.appendChild(opt);
+      });
+    }
+
+    let chart;
+    async function refreshAll() {
+      const from = toUTCISOString(fromEl.value);
+      const to   = toUTCISOString(toEl.value);
+      const limit= Number(limitEl.value || 50);
+      const server = serverEl.value || 'all';
+      const group = document.querySelector('input[name="series_group"]:checked').value;
+
+      const [series, ips, uas] = await Promise.all([
+        fetchJSON(`/api/series?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&q=ip&group=${group}`),
+        fetchJSON(`/api/top_ips?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&limit=${limit}&server=${encodeURIComponent(server)}`),
+        fetchJSON(`/api/top_uas?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&limit=${limit}&server=${encodeURIComponent(server)}`)
+      ]);
+
+      // Chart
+      const ctx = document.getElementById('series').getContext('2d');
+      if (chart) chart.destroy();
+      if (group === 'server') {
+        // group rows by server
+        const byServer = {};
+        for (const r of series.rows) {
+          (byServer[r.server_name] ||= {labels:[], data:[]});
+        }
+        const allTs = Array.from(new Set(series.rows.map(r => r.ts))).sort();
+        for (const srv of Object.keys(byServer)) {
+          byServer[srv].labels = allTs.map(ts => new Date(ts).toLocaleString());
+          const map = new Map(series.rows.filter(r => r.server_name===srv).map(r => [r.ts, Number(r.total)]));
+          byServer[srv].data = allTs.map(ts => map.get(ts) || 0);
+        }
+        const datasets = Object.entries(byServer).map(([name, obj]) => ({
+          label: name, data: obj.data
+        }));
+        chart = new Chart(ctx, { type:'line', data:{ labels: Object.values(byServer)[0]?.labels || [], datasets },
+          options:{ responsive:true, maintainAspectRatio:false }});
+      } else {
+        const labels = series.rows.map(r => new Date(r.ts).toLocaleString());
+        const data   = series.rows.map(r => Number(r.total));
+        chart = new Chart(ctx, { type:'line', data:{ labels, datasets:[{label:'Requests', data}] },
+          options:{ responsive:true, maintainAspectRatio:false }});
+      }
+
+      // Top lists with drilldowns
+      const ipList = document.getElementById('top-ips');
+      ipList.innerHTML = '';
+      ips.rows.forEach(({ip, total}) => {
+        const li = document.createElement('li');
+        li.className = 'flex justify-between';
+        li.innerHTML = `<button class="underline decoration-dotted" data-ip="${ip}">${ip}</button><span class="text-gray-600">${total}</span>`;
+        ipList.appendChild(li);
+      });
+
+      const uaList = document.getElementById('top-uas');
+      uaList.innerHTML = '';
+      uas.rows.forEach(({user_agent, total}) => {
+        const li = document.createElement('li');
+        li.className = 'flex justify-between';
+        li.innerHTML = `<button class="truncate underline decoration-dotted" data-ua="${user_agent}" title="${user_agent}">${user_agent}</button><span class="text-gray-600">${total}</span>`;
+        uaList.appendChild(li);
+      });
+
+      // Bind drilldowns
+      ipList.querySelectorAll('button[data-ip]').forEach(b => {
+        b.addEventListener('click', async () => {
+          drawerTitle.textContent = `Per-server breakdown: ${b.dataset.ip}`;
+          const data = await fetchJSON(`/api/ip_breakdown?ip=${encodeURIComponent(b.dataset.ip)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+          drawerList.innerHTML = '';
+          data.rows.forEach(r => {
+            const li = document.createElement('li');
+            li.className = 'flex justify-between';
+            li.innerHTML = `<span>${r.server_name}</span><span class="text-gray-600">${r.total}</span>`;
+            drawerList.appendChild(li);
+          });
+          drawer.showModal();
+        });
+      });
+      uaList.querySelectorAll('button[data-ua]').forEach(b => {
+        b.addEventListener('click', async () => {
+          drawerTitle.textContent = `Per-server breakdown: UA`;
+          const data = await fetchJSON(`/api/ua_breakdown?ua=${encodeURIComponent(b.dataset.ua)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+          drawerList.innerHTML = '';
+          data.rows.forEach(r => {
+            const li = document.createElement('li');
+            li.className = 'flex justify-between';
+            li.innerHTML = `<span>${r.server_name}</span><span class="text-gray-600">${r.total}</span>`;
+            drawerList.appendChild(li);
+          });
+          drawer.showModal();
+        });
+      });
+    }
+
+    drawerClose.addEventListener('click', () => drawer.close());
+    apply.addEventListener('click', refreshAll);
+    last24.addEventListener('click', () => {
+      const to = new Date();
+      const from = new Date(to.getTime() - 24*3600*1000);
+      fromEl.value = toLocalDTISO(from);
+      toEl.value   = toLocalDTISO(to);
+      refreshAll();
+    });
+    refresh.addEventListener('click', (e) => { e.preventDefault(); refreshAll(); });
+    document.querySelectorAll('input[name="series_group"]').forEach(r => r.addEventListener('change', refreshAll));
+
+    (async function init() {
+      await loadServers();
+      await refreshAll();
+    })();
+  </script>
+</body>
+</html>
+

@@ -1,0 +1,11 @@
+a2enmod proxy proxy_http headers
+cd api
+cpanm --installdeps .
+#carton install
+carton exec plackup -s Starman -l 127.0.0.1:5000 app.psgi
+
+cd central
+cpanm --installdeps .
+
+
+

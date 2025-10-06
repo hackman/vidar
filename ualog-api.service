@@ -1,0 +1,18 @@
+[Unit]
+Description=User-Agent Log Perl API (PSGI/Starman)
+After=network.target
+
+[Service]
+Environment=RL_PG_DSN=dbi:Pg:dbname=weblogs;host=127.0.0.1;port=5432
+Environment=RL_PG_USER=weblogs
+Environment=RL_PG_PASS=
+Environment=PERL5OPT=-T
+WorkingDirectory=/var/www/ualog-ui/api
+ExecStart=/usr/bin/plackup -s Starman -l 127.0.0.1:5000 --workers 4 app.psgi
+Restart=always
+User=www-data
+Group=www-data
+
+[Install]
+WantedBy=multi-user.target
+

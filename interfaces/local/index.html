@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Traffic Insights</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-gray-50 text-gray-900">
+  <div class="max-w-7xl mx-auto p-6">
+    <header class="mb-6">
+      <h1 class="text-3xl font-semibold tracking-tight">Traffic Insights</h1>
+      <p class="text-sm text-gray-600">IP & User-Agent popularity (defaults to last 24h, UTC).</p>
+    </header>
+
+    <section class="grid grid-cols-1 lg:grid-cols-3 gap-4 items-end mb-6">
+      <div class="col-span-2 bg-white rounded-2xl shadow p-4">
+        <div class="flex flex-wrap items-end gap-4">
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">From</label>
+            <input id="from" type="datetime-local" class="border rounded-lg px-3 py-2">
+          </div>
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">To</label>
+            <input id="to" type="datetime-local" class="border rounded-lg px-3 py-2">
+          </div>
+          <button id="apply" class="ml-auto bg-black text-white rounded-xl px-4 py-2 shadow hover:opacity-90">Apply</button>
+          <button id="last24" class="bg-gray-200 rounded-xl px-4 py-2">Last 24h</button>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-2xl shadow p-4">
+        <div class="flex items-center gap-2">
+          <span class="text-sm text-gray-600">Top limit</span>
+          <input id="limit" type="number" min="1" max="200" value="50" class="w-20 border rounded-lg px-2 py-1">
+        </div>
+      </div>
+    </section>
+
+    <section class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div class="bg-white rounded-2xl shadow p-4 lg:col-span-2">
+        <h2 class="text-lg font-medium mb-2">Requests over time</h2>
+        <canvas id="series"></canvas>
+      </div>
+
+      <div class="bg-white rounded-2xl shadow p-4">
+        <h2 class="text-lg font-medium mb-2">Top IPs</h2>
+        <ol id="top-ips" class="space-y-1 text-sm"></ol>
+      </div>
+
+      <div class="bg-white rounded-2xl shadow p-4">
+        <h2 class="text-lg font-medium mb-2">Top User-Agents</h2>
+        <ol id="top-uas" class="space-y-1 text-sm"></ol>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    function toLocalDTISO(d) {
+      // For datetime-local: strip seconds & Z, adjust to local
+      const pad = n => String(n).padStart(2,'0');
+      return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+    function toUTCISOString(localStr) {
+      if (!localStr) return null;
+      const d = new Date(localStr);
+      return new Date(d.getTime() - (d.getTimezoneOffset()*60000)).toISOString();
+    }
+    const fromEl = document.getElementById('from');
+    const toEl   = document.getElementById('to');
+    const limitEl= document.getElementById('limit');
+    const last24 = document.getElementById('last24');
+    const apply  = document.getElementById('apply');
+
+    // Default last 24h
+    (function initRange() {
+      const to = new Date();
+      const from = new Date(to.getTime() - 24*3600*1000);
+      fromEl.value = toLocalDTISO(from);
+      toEl.value   = toLocalDTISO(to);
+    })();
+
+    let chart;
+    async function fetchJSON(url) { const r = await fetch(url); return r.json(); }
+
+    async function refresh() {
+      const from = toUTCISOString(fromEl.value);
+      const to   = toUTCISOString(toEl.value);
+      const limit= Number(limitEl.value || 50);
+
+      const [series, ips, uas] = await Promise.all([
+        fetchJSON(`../api/series?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&q=ip`),
+        fetchJSON(`../api/top_ips?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&limit=${limit}`),
+        fetchJSON(`../api/top_uas?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&limit=${limit}`)
+      ]);
+
+      // Chart
+      const labels = series.rows.map(r => new Date(r.ts).toLocaleString());
+      const data   = series.rows.map(r => Number(r.total));
+      if (chart) chart.destroy();
+      const ctx = document.getElementById('series').getContext('2d');
+      chart = new Chart(ctx, {
+        type: 'line',
+        data: { labels, datasets: [{ label: 'Requests', data }] },
+        options: { responsive: true, maintainAspectRatio: false }
+      });
+
+      // Lists
+      const ipList = document.getElementById('top-ips');
+      ipList.innerHTML = '';
+      ips.rows.forEach(({ip, total}) => {
+        const li = document.createElement('li');
+        li.className = 'flex justify-between';
+        li.innerHTML = `<span class="font-mono">${ip}</span><span class="text-gray-600">${total}</span>`;
+        ipList.appendChild(li);
+      });
+
+      const uaList = document.getElementById('top-uas');
+      uaList.innerHTML = '';
+      uas.rows.forEach(({user_agent, total}) => {
+        const li = document.createElement('li');
+        li.className = 'flex justify-between';
+        li.innerHTML = `<span class="truncate" title="${user_agent}">${user_agent}</span><span class="text-gray-600">${total}</span>`;
+        uaList.appendChild(li);
+      });
+    }
+
+    apply.addEventListener('click', refresh);
+    last24.addEventListener('click', () => {
+      const to = new Date();
+      const from = new Date(to.getTime() - 24*3600*1000);
+      fromEl.value = toLocalDTISO(from);
+      toEl.value   = toLocalDTISO(to);
+      refresh();
+    });
+
+    refresh();
+  </script>
+</body>
+</html>
+

@@ -1,0 +1,5 @@
+# Requires libhiredis
+
+apxs -c -I/usr/include/hiredis -lhiredis mod_ualog.c
+sudo apxs -i mod_ualog.la
+

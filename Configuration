@@ -1,0 +1,13 @@
+LoadModule ualog_module modules/mod_ualog.so
+
+<IfModule ualog_module>
+  RedisLogHost 10.0.0.12
+  RedisLogPort 6379
+  RedisLogDB   1
+  RedisLogKeyPrefix rl
+  RedisLogBucketSeconds 600
+  RedisLogRetentionSeconds 1209600  # 14 days
+  # Optional: fail open (do not block request if Redis is down)
+  RedisLogFailOpen On
+</IfModule>
+
